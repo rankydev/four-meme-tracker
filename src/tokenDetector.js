@@ -5,7 +5,7 @@ import {
   ZERO_ADDRESS,
   STANDARD_TOTAL_SUPPLY
 } from './config/index.js';
-import { safeStringify } from './utils.js';
+import { safeStringify, log } from './utils.js';
 
 /**
  * Log token creation details to console and save to file

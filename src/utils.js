@@ -2,6 +2,35 @@
  * Utility functions for the Four.meme Token Tracker application
  */
 
+import fs from 'fs';
+
+/**
+ * Write a log message to both console and log file
+ * @param {string} message - The message to log
+ * @param {boolean} showInConsole - Whether to show the message in console (default: true)
+ * @param {string} logsDir - Directory to save log files (default: './logs')
+ */
+export function log(message, showInConsole = true, logsDir = './logs') {
+  const timestamp = new Date().toISOString();
+  const formattedMessage = `${timestamp}: ${message}`;
+  
+  // Show in console if requested
+  if (showInConsole) {
+    console.log(message);
+  }
+  
+  // Append to today's log file
+  const today = new Date().toISOString().split('T')[0];
+  const logFile = `${logsDir}/token_tracker_${today}.log`;
+  
+  // Ensure the logs directory exists
+  if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir, { recursive: true });
+  }
+  
+  fs.appendFileSync(logFile, formattedMessage + '\n');
+}
+
 /**
  * Custom JSON serializer that handles BigInt values
  * @param {Object} data - The data to stringify
