@@ -1,3 +1,5 @@
+process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = 0;
+
 import { clientHttp, clientWebsocket } from './src/clients/client.js';
 import { parseAbiItem } from 'viem';
 import fs from 'fs';
