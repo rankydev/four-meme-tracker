@@ -2433,43 +2433,496 @@ const tokenAddress = '0xbb629c94b6046d7cd3ad96d16ca3a4ad29c377e9';
 const creationBlock = 47748104;
 const blocksToAnalyze = 3;
 
-console.log(`Running analysis in ${runMode} mode for token ${tokenAddress}`);
-
-// Run the appropriate analysis based on command-line argument
-if (runMode === '--legacy' || runMode === 'legacy') {
-  console.log("Running legacy detailed analysis...");
-  analyzeTokenEarlyActivity(
-    tokenAddress,
-    creationBlock,
-    blocksToAnalyze
-  );
-} else if (runMode === '--quick' || runMode === 'quick') {
-  console.log("Running quick analysis...");
-  quickTokenAnalysis(
-    tokenAddress,
-    creationBlock,
-    blocksToAnalyze
-  );
-} else if (runMode === '--ultra' || runMode === 'ultra') {
-  console.log("Running ultra-fast logs-only analysis...");
-  ultraFastTokenAnalysis(
-    tokenAddress,
-    creationBlock,
-    blocksToAnalyze
-  );
-} else if (runMode === '--turbo' || runMode === 'turbo') {
-  console.log("Running turbo-fast block+transaction analysis...");
-  turboFastTokenAnalysis(
-    tokenAddress,
-    creationBlock,
-    blocksToAnalyze
-  );
+// Parse for transaction analysis
+if (runMode === '--analyze-tx' || runMode === 'analyze-tx') {
+  const txHash = args[1];
+  if (!txHash) {
+    console.error("Please provide a transaction hash to analyze");
+    process.exit(1);
+  }
+  console.log(`Analyzing transaction ${txHash} for token creation details`);
+  analyzeTokenCreationTx(txHash);
+}
+// Parse for token detection
+else if (runMode === '--detect' || runMode === 'detect') {
+  const blockNumber = args[1] ? parseInt(args[1]) : creationBlock;
+  console.log(`Running token creation detection for block ${blockNumber}`);
+  detectTokenCreation(blockNumber);
 } else {
-  // Default is superfast
-  console.log("Running super-fast optimized analysis...");
-  superFastTokenAnalysis(
-    tokenAddress,
-    creationBlock,
-    blocksToAnalyze
-  );
+  // Regular token analysis modes
+  console.log(`Running analysis in ${runMode} mode for token ${tokenAddress}`);
+  
+  // Run the appropriate analysis based on command-line argument
+  if (runMode === '--legacy' || runMode === 'legacy') {
+    console.log("Running legacy detailed analysis...");
+    analyzeTokenEarlyActivity(
+      tokenAddress,
+      creationBlock,
+      blocksToAnalyze
+    );
+  } else if (runMode === '--quick' || runMode === 'quick') {
+    console.log("Running quick analysis...");
+    quickTokenAnalysis(
+      tokenAddress,
+      creationBlock,
+      blocksToAnalyze
+    );
+  } else if (runMode === '--ultra' || runMode === 'ultra') {
+    console.log("Running ultra-fast logs-only analysis...");
+    ultraFastTokenAnalysis(
+      tokenAddress,
+      creationBlock,
+      blocksToAnalyze
+    );
+  } else if (runMode === '--turbo' || runMode === 'turbo') {
+    console.log("Running turbo-fast block+transaction analysis...");
+    turboFastTokenAnalysis(
+      tokenAddress,
+      creationBlock,
+      blocksToAnalyze
+    );
+  } else {
+    // Default is superfast
+    console.log("Running super-fast optimized analysis...");
+    superFastTokenAnalysis(
+      tokenAddress,
+      creationBlock,
+      blocksToAnalyze
+    );
+  }
+}
+
+/**
+ * Enhanced token creation detection based on Four.meme patterns
+ */
+async function detectTokenCreation(blockNumber) {
+  console.log(`\n=== ANALYZING BLOCK ${blockNumber} FOR FOUR.MEME TOKEN CREATION ===`);
+  const startTime = Date.now();
+  
+  try {
+    // Constants - Using the proper Four.meme address as defined at the top of the file
+    const FOUR_MEME_ADDRESS = "0x5c952063c7fc8610ffdb798152d69f0b9550762b".toLowerCase();
+    const ROUTER_ADDRESS = "0x5c952063c7fc8610ffdb798152d69f0b9550762b".toLowerCase(); // Same as Four.meme address in this case
+    
+    // Fetch the block with full transaction data
+    console.log(`Fetching block ${blockNumber} with full transaction data...`);
+    const block = await client.getBlock({
+      blockNumber: BigInt(blockNumber),
+      includeTransactions: true
+    });
+    
+    console.log(`Block ${blockNumber} contains ${block.transactions.length} transactions`);
+    
+    // Track potential token creations
+    const potentialTokenCreations = [];
+    
+    // Find transactions involving the Four.meme platform
+    console.log("\nLooking for transactions involving Four.meme platform...");
+    const fourMemeTransactions = block.transactions.filter(tx => {
+      // Direct interactions with Four.meme contract (to OR from)
+      if (tx.to && tx.to.toLowerCase() === FOUR_MEME_ADDRESS) {
+        return true;
+      }
+      if (tx.from && tx.from.toLowerCase() === FOUR_MEME_ADDRESS) {
+        return true;
+      }
+      return false;
+    });
+    
+    console.log(`Found ${fourMemeTransactions.length} transactions directly involving the Four.meme platform`);
+    
+    // Get all transaction hashes involving Four.meme for later reference
+    const fourMemeTxHashes = new Set(fourMemeTransactions.map(tx => tx.hash));
+    
+    // Look for ALL Transfer events in this block 
+    console.log("\nFetching Transfer events in this block...");
+    const transferLogs = await client.getLogs({
+      fromBlock: BigInt(blockNumber),
+      toBlock: BigInt(blockNumber),
+      topics: [
+        // Transfer event signature
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+      ]
+    });
+    
+    console.log(`Found ${transferLogs.length} Transfer events`);
+    
+    // Group logs by contract address
+    console.log("\nGrouping events by contract...");
+    const contractEvents = {};
+    
+    // Track tokens with direct Four.meme involvement
+    const fourMemeInvolvedTokens = new Set();
+    
+    // Process Transfer events
+    for (const log of transferLogs) {
+      const address = log.address.toLowerCase();
+      if (!contractEvents[address]) {
+        contractEvents[address] = {
+          transfers: [],
+          buys: [],
+          sells: [],
+          mints: [],
+          burns: [],
+          txHashes: new Set(),
+          fourMemeInvolved: false,
+          fourMemeReason: []
+        };
+      }
+      
+      // Add transfer
+      contractEvents[address].transfers.push(log);
+      
+      // Track transaction hash
+      contractEvents[address].txHashes.add(log.transactionHash);
+      
+      // Check if this transfer is in a Four.meme transaction
+      if (fourMemeTxHashes.has(log.transactionHash)) {
+        contractEvents[address].fourMemeInvolved = true;
+        contractEvents[address].fourMemeReason.push('Four.meme transaction');
+        fourMemeInvolvedTokens.add(address);
+      }
+      
+      // Identify transfer type if this is a Transfer event
+      if (log.topics && log.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' && log.topics.length >= 3) {
+        const fromAddr = '0x' + log.topics[1].slice(26).toLowerCase();
+        const toAddr = '0x' + log.topics[2].slice(26).toLowerCase();
+        
+        // Check if Four.meme is directly involved in the transfer
+        if (fromAddr === FOUR_MEME_ADDRESS || toAddr === FOUR_MEME_ADDRESS) {
+          contractEvents[address].fourMemeInvolved = true;
+          contractEvents[address].fourMemeReason.push('Transfer to/from Four.meme');
+          fourMemeInvolvedTokens.add(address);
+        }
+        
+        // Mint (from zero address)
+        if (fromAddr === '0x0000000000000000000000000000000000000000') {
+          contractEvents[address].mints.push(log);
+        }
+        // Burn (to zero address)
+        else if (toAddr === '0x0000000000000000000000000000000000000000') {
+          contractEvents[address].burns.push(log);
+        }
+        // Buy (to/from router)
+        else if (fromAddr === ROUTER_ADDRESS) {
+          contractEvents[address].buys.push(log);
+        }
+        // Sell (to/from router)
+        else if (toAddr === ROUTER_ADDRESS) {
+          contractEvents[address].sells.push(log);
+        }
+      }
+    }
+    
+    console.log(`\nFound ${fourMemeInvolvedTokens.size} tokens with direct Four.meme involvement`);
+    
+    // Add a list of well-known token addresses to exclude
+    const EXCLUDE_TOKENS = [
+      '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', // WBNB
+      '0x55d398326f99059ff775485246999027b3197955', // USDT
+      '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d', // USDC
+      '0x2170ed0880ac9a755fd29b2688956bd959f933f8', // ETH
+      '0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c', // BTCB
+      '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3', // DAI
+      '0x7083609fce4d1d8dc0c979aab8c869ea2c873402'  // DOT
+    ];
+    
+    // Analyze each contract for Four.meme token patterns
+    console.log("\nAnalyzing contracts for Four.meme token patterns...");
+    
+    // Filter contracts - prioritize those with direct Four.meme involvement
+    const analyzedContracts = Object.keys(contractEvents)
+      .filter(address => {
+        // Exclude well-known tokens
+        if (EXCLUDE_TOKENS.includes(address.toLowerCase())) return false;
+        
+        const events = contractEvents[address];
+        
+        // Include if Four.meme is directly involved
+        if (events.fourMemeInvolved) return true;
+        
+        // For tokens without direct involvement, only include those with interesting activity
+        // that might be worth investigating
+        if ((events.buys.length > 0 || events.sells.length > 0) && 
+            (events.mints.length > 0 || events.transfers.length >= 3)) {
+          return true;
+        }
+        
+        return false;
+      });
+    
+    console.log(`Found ${analyzedContracts.length} contracts to analyze (after filtering)`);
+    
+    for (const address of analyzedContracts) {
+      const events = contractEvents[address];
+      console.log(`\nAnalyzing contract ${address} with ${events.transfers.length} transfers (${events.buys.length} buys, ${events.sells.length} sells, ${events.mints.length} mints)`);
+      
+      if (events.fourMemeInvolved) {
+        console.log(`✅ FOUR.MEME CONFIRMED: Direct involvement detected (${events.fourMemeReason.join(', ')})`);
+      }
+      
+      // Check if it looks like a Four.meme token
+      let isFourMemePattern = events.fourMemeInvolved; // Default to true if direct involvement
+      let fourMemeScore = events.fourMemeInvolved ? 10 : 0; // Start with high score if direct involvement
+      let reasons = events.fourMemeInvolved ? events.fourMemeReason : [];
+      
+      // 1. Check for transfers involving the router (buys/sells)
+      if (events.buys.length > 0 || events.sells.length > 0) {
+        console.log(`Found ${events.buys.length + events.sells.length} trades involving the router (${events.buys.length} buys, ${events.sells.length} sells)`);
+        fourMemeScore += (events.buys.length + events.sells.length) * 2;
+        reasons.push(`${events.buys.length + events.sells.length} router trades`);
+      }
+      
+      // 2. Check for mints from zero address (token creation)
+      if (events.mints.length > 0) {
+        console.log(`Found ${events.mints.length} mint events (token creation)`);
+        fourMemeScore += events.mints.length;
+        reasons.push(`${events.mints.length} mint events`);
+        
+        // Mint in same block as router interaction is very strong signal
+        if (events.buys.length > 0 || events.sells.length > 0) {
+          fourMemeScore += 5;
+          reasons.push("Mint + router trades in same block");
+        }
+      }
+      
+      // 3. Check if transactions match Four.meme transaction pattern
+      const matchingFourMemeTxs = Array.from(events.txHashes).filter(txHash => 
+        fourMemeTxHashes.has(txHash)
+      );
+      
+      if (matchingFourMemeTxs.length > 0) {
+        console.log(`Found ${matchingFourMemeTxs.length} transactions matching Four.meme pattern`);
+        fourMemeScore += matchingFourMemeTxs.length * 3;
+        reasons.push(`${matchingFourMemeTxs.length} Four.meme transactions`);
+      }
+      
+      // Determine if this is likely a Four.meme token based on score
+      isFourMemePattern = isFourMemePattern || fourMemeScore >= 3;
+      
+      // If it matches our pattern, verify it's an ERC20 token
+      if (isFourMemePattern) {
+        try {
+          console.log(`Potential Four.meme token detected - checking ERC20 compatibility...`);
+          const tokenInfo = await getBasicTokenInfo(address);
+          
+          console.log(`✅ Confirmed ERC20 token: ${tokenInfo.name} (${tokenInfo.symbol})`);
+          console.log(`Decimals: ${tokenInfo.decimals}`);
+          console.log(`Total Supply: ${formatEther(tokenInfo.totalSupply)}`);
+          
+          // Check if any of the transactions had value sent to the Four.meme address
+          let creatorAddress = null;
+          let creationTx = null;
+          
+          for (const txHash of events.txHashes) {
+            const tx = block.transactions.find(t => t.hash === txHash);
+            if (tx && tx.to && tx.to.toLowerCase() === FOUR_MEME_ADDRESS && tx.value > 0) {
+              creatorAddress = tx.from;
+              creationTx = tx.hash;
+              console.log(`Found likely creation tx: ${tx.hash} from ${tx.from} with ${formatEther(tx.value)} ETH`);
+              break;
+            }
+          }
+          
+          // Add to token creations
+          potentialTokenCreations.push({
+            tokenAddress: address,
+            tokenName: tokenInfo.name,
+            tokenSymbol: tokenInfo.symbol,
+            totalSupply: tokenInfo.totalSupply,
+            decimals: tokenInfo.decimals,
+            creatorAddress,
+            creationTx,
+            fourMemeInvolved: events.fourMemeInvolved,
+            fourMemeReasons: events.fourMemeReason.join(', '),
+            mintEvents: events.mints.length,
+            buyTrades: events.buys.length,
+            sellTrades: events.sells.length,
+            totalTxs: events.txHashes.size,
+            fourMemeScore,
+            reasons: reasons.join(", "),
+            confidence: events.fourMemeInvolved ? 'Very High' : 
+                      (fourMemeScore >= 5 ? 'High' : 
+                      (fourMemeScore >= 3 ? 'Medium' : 'Low'))
+          });
+        } catch (error) {
+          console.log(`Not an ERC20 token: ${error.message}`);
+        }
+      }
+    }
+    
+    // Print summary of detected token creations
+    console.log("\n=== DETECTED FOUR.MEME TOKENS ===");
+    if (potentialTokenCreations.length === 0) {
+      console.log("No Four.meme token creations detected in this block");
+    }
+    
+    // Sort by Four.meme involvement first, then by score
+    potentialTokenCreations.sort((a, b) => {
+      if (a.fourMemeInvolved && !b.fourMemeInvolved) return -1;
+      if (!a.fourMemeInvolved && b.fourMemeInvolved) return 1;
+      return b.fourMemeScore - a.fourMemeScore;
+    });
+    
+    for (let i = 0; i < potentialTokenCreations.length; i++) {
+      const token = potentialTokenCreations[i];
+      console.log(`\n${i+1}. Token: ${token.tokenAddress}`);
+      console.log(`   Name: ${token.tokenName}`);
+      console.log(`   Symbol: ${token.tokenSymbol}`);
+      console.log(`   Total Supply: ${formatEther(token.totalSupply)}`);
+      console.log(`   Creator: ${token.creatorAddress || 'Unknown'}`);
+      console.log(`   Creation Tx: ${token.creationTx || 'Unknown'}`);
+      if (token.fourMemeInvolved) {
+        console.log(`   ✅ FOUR.MEME CONFIRMED TOKEN (${token.fourMemeReasons})`);
+      }
+      console.log(`   Trading Activity: ${token.buyTrades} buys, ${token.sellTrades} sells`);
+      console.log(`   Mint Events: ${token.mintEvents}`);
+      console.log(`   Total Transactions: ${token.totalTxs}`);
+      console.log(`   Four.meme Score: ${token.fourMemeScore} (${token.reasons})`);
+      console.log(`   Confidence: ${token.confidence}`);
+    }
+    
+    console.log(`\nAnalysis completed in ${((Date.now() - startTime) / 1000).toFixed(2)} seconds`);
+    return potentialTokenCreations;
+    
+  } catch (error) {
+    console.error("Error in token creation detection:", error);
+    return { error: error.message };
+  }
+}
+
+/**
+ * Analyzes a specific transaction to understand token creation mechanics
+ */
+async function analyzeTokenCreationTx(txHash) {
+  console.log(`\n=== ANALYZING TRANSACTION ${txHash} FOR TOKEN CREATION DETAILS ===`);
+  const startTime = Date.now();
+  
+  try {
+    // Fetch the transaction
+    console.log(`Fetching transaction data...`);
+    const tx = await client.getTransaction({ hash: txHash });
+    console.log(`\nTransaction basic details:`);
+    console.log(`From: ${tx.from}`);
+    console.log(`To: ${tx.to || 'Contract Creation'}`);
+    console.log(`Value: ${formatEther(tx.value)} ETH`);
+    console.log(`Block: ${tx.blockNumber}`);
+    console.log(`Gas Used: ${tx.gas}`);
+    
+    // Fetch the receipt for logs and created contracts
+    console.log(`\nFetching transaction receipt for events...`);
+    const receipt = await client.getTransactionReceipt({ hash: txHash });
+    console.log(`Gas Used in Receipt: ${receipt.gasUsed}`);
+    console.log(`Status: ${receipt.status ? 'Success' : 'Failed'}`);
+    
+    // If contract was created
+    if (receipt.contractAddress) {
+      console.log(`\n🔍 Contract created at: ${receipt.contractAddress}`);
+      
+      // Check if it's a token
+      try {
+        const tokenInfo = await getBasicTokenInfo(receipt.contractAddress);
+        console.log(`✅ Confirmed ERC20 token: ${tokenInfo.name} (${tokenInfo.symbol})`);
+        console.log(`Decimals: ${tokenInfo.decimals}`);
+        console.log(`Total Supply: ${formatEther(tokenInfo.totalSupply)}`);
+        
+        // Remove owner check section
+      } catch (e) {
+        console.log(`❌ Not an ERC20 token: ${e.message}`);
+      }
+    } else {
+      console.log(`\nNo contract was directly created in this transaction`);
+    }
+    
+    // Analyze logs from the receipt
+    console.log(`\nAnalyzing transaction logs...`);
+    console.log(`Found ${receipt.logs.length} logs in the transaction`);
+    
+    // Track tokens involved
+    const tokensInvolved = new Set();
+    
+    // Group logs by event signature
+    const eventTypes = {};
+    
+    for (let i = 0; i < receipt.logs.length; i++) {
+      const log = receipt.logs[i];
+      const contractAddress = log.address;
+      tokensInvolved.add(contractAddress);
+      
+      // Check if this is a transfer event
+      if (log.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef') {
+        const eventType = 'Transfer';
+        if (!eventTypes[eventType]) eventTypes[eventType] = 0;
+        eventTypes[eventType]++;
+        
+        // Decode the transfer
+        const fromAddr = '0x' + log.topics[1].slice(26).toLowerCase();
+        const toAddr = '0x' + log.topics[2].slice(26).toLowerCase();
+        
+        let value;
+        try {
+          value = log.data && log.data !== '0x' ? formatEther(BigInt(log.data)) : '0';
+        } catch (e) {
+          value = 'Error decoding: ' + log.data;
+        }
+        
+        console.log(`\nLog #${i} - Token Transfer:`);
+        console.log(`Contract: ${contractAddress}`);
+        console.log(`From: ${fromAddr}`);
+        console.log(`To: ${toAddr}`);
+        console.log(`Value: ${value}`);
+        
+        // Check if this is a mint (from zero address)
+        if (fromAddr === '0x0000000000000000000000000000000000000000') {
+          console.log(`🔍 This is a token MINT (from zero address)`);
+          
+          // Check if it's a token
+          try {
+            const tokenInfo = await getBasicTokenInfo(contractAddress);
+            console.log(`Token: ${tokenInfo.name} (${tokenInfo.symbol})`);
+          } catch (e) {
+            console.log(`Could not get token info: ${e.message}`);
+          }
+        }
+      }
+      // Otherwise just show the topic and data
+      else {
+        const eventType = 'Unknown (' + log.topics[0].slice(0, 10) + '...)';
+        if (!eventTypes[eventType]) eventTypes[eventType] = 0;
+        eventTypes[eventType]++;
+        
+        console.log(`\nLog #${i} - Other Event:`);
+        console.log(`Contract: ${contractAddress}`);
+        console.log(`Topic 0: ${log.topics[0]}`);
+        console.log(`Data: ${log.data.length > 66 ? log.data.slice(0, 66) + '...' : log.data}`);
+      }
+    }
+    
+    // Summary of event types
+    console.log(`\nEvent Summary:`);
+    for (const [eventType, count] of Object.entries(eventTypes)) {
+      console.log(`- ${eventType}: ${count}`);
+    }
+    
+    // For each token contract involved, check if it's actually a token
+    console.log(`\nToken Contracts Involved (${tokensInvolved.size}):`);
+    for (const tokenAddr of tokensInvolved) {
+      console.log(`\nChecking ${tokenAddr} for ERC20 compatibility...`);
+      
+      try {
+        const tokenInfo = await getBasicTokenInfo(tokenAddr);
+        console.log(`✅ ERC20 Token: ${tokenInfo.name} (${tokenInfo.symbol})`);
+        console.log(`Decimals: ${tokenInfo.decimals}`);
+        console.log(`Total Supply: ${formatEther(tokenInfo.totalSupply)}`);
+        
+        // Remove owner check section
+      } catch (e) {
+        console.log(`❌ Not an ERC20 token: ${e.message}`);
+      }
+    }
+    
+    console.log(`\nAnalysis completed in ${((Date.now() - startTime) / 1000).toFixed(2)} seconds`);
+  } catch (error) {
+    console.error(`Error analyzing transaction: ${error.message}`);
+  }
 }
