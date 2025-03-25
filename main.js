@@ -22,9 +22,7 @@ const transferEvent = parseAbiItem('event Transfer(address indexed from, address
  * Process a specific block to detect new token creations
  */
 async function processBlock(blockNumber) {
-  try {
-    log(`Processing block ${blockNumber}`, false, logsDir); // Set to false to hide from console
-    
+  try {    
     // Create filter for Transfer events in this block
     // Note: We use parseAbiItem for the event structure but we're aware that 
     // TRANSFER_EVENT_SIGNATURE from config has the correct event signature
@@ -51,7 +49,7 @@ async function processBlock(blockNumber) {
       txGroups[log.transactionHash].push(log);
     });
     
-    log(`Grouped into ${Object.keys(txGroups).length} transactions`, false, logsDir); // Set to false to hide from console
+    // log(`Grouped into ${Object.keys(txGroups).length} transactions`, false, logsDir); // Set to false to hide from console
     
     for (const [txHash, txLogs] of Object.entries(txGroups)) {
       // We need to create a custom logFunction that passes logsDir to the imported log function
@@ -88,7 +86,6 @@ async function main() {
   // Watch for new blocks
   const unwatch = clientWebsocket.watchBlockNumber({
     onBlockNumber: async (blockNumber) => {
-      log(`New block detected: ${blockNumber}`, false, logsDir); // Hide from console
       await processBlock(blockNumber);
     },
     onError: (error) => {
