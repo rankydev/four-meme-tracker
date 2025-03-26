@@ -25,7 +25,7 @@ async function fetchLatestLogs() {
       toBlock: latestBlock
     });
     
-    console.log(`Found ${logs.length} logs in block ${latestBlock}`);
+    // console.log(`Found ${logs.length} logs in block ${latestBlock}`);
     
     if (logs.length === 0) {
       console.log('No logs found in the latest block. Trying previous block...');

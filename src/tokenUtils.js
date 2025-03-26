@@ -2,12 +2,11 @@ import { clientHttp } from './clients/client.js';
 import { parseAbi, toHex } from 'viem';
 
 /**
- * ERC20 token interface for name, symbol, and decimals
+ * ERC20 token interface for name and symbol
  */
 const erc20Abi = parseAbi([
   'function name() view returns (string)',
-  'function symbol() view returns (string)',
-  'function decimals() view returns (uint8)'
+  'function symbol() view returns (string)'
 ]);
 
 // Flag to enable or disable debug logging
@@ -30,14 +29,13 @@ export async function getTokenData(tokenAddress) {
   
   let name = null;
   let symbol = null;
-  let decimals = null;
   let success = false;
   let errors = [];
   
   // First approach: Try multicall (more efficient)
   try {
     debugLog(`Using multicall for ${tokenAddress}`);
-    const [nameResult, symbolResult, decimalsResult] = await clientHttp.multicall({
+    const [nameResult, symbolResult] = await clientHttp.multicall({
       contracts: [
         {
           address: tokenAddress,
@@ -48,11 +46,6 @@ export async function getTokenData(tokenAddress) {
           address: tokenAddress,
           abi: erc20Abi,
           functionName: 'symbol',
-        },
-        {
-          address: tokenAddress,
-          abi: erc20Abi,
-          functionName: 'decimals',
         }
       ],
       allowFailure: true,
@@ -75,16 +68,6 @@ export async function getTokenData(tokenAddress) {
     } else {
       debugLog(`Multicall symbol failed: ${symbolResult.error?.message || 'unknown error'}`);
       errors.push({ field: 'symbol', error: symbolResult.error?.message || 'unknown error', method: 'multicall' });
-    }
-    
-    if (decimalsResult.status === 'success') {
-      decimals = decimalsResult.result;
-      debugLog(`Multicall got decimals: ${decimals}`);
-    } else {
-      debugLog(`Multicall decimals failed: ${decimalsResult.error?.message || 'unknown error'}`);
-      errors.push({ field: 'decimals', error: decimalsResult.error?.message || 'unknown error', method: 'multicall' });
-      // Default to 18 as most common
-      decimals = 18;
     }
   } catch (multicallError) {
     debugLog(`Multicall error: ${multicallError.message}`);
@@ -125,30 +108,11 @@ export async function getTokenData(tokenAddress) {
       errors.push({ field: 'symbol', error: symbolError.message, method: 'individual' });
     }
   }
-  
-  // Try to get decimals if still missing
-  if (decimals === null) {
-    try {
-      debugLog(`Getting decimals for ${tokenAddress} with individual call`);
-      decimals = await clientHttp.readContract({
-        address: tokenAddress,
-        abi: erc20Abi,
-        functionName: 'decimals'
-      });
-      debugLog(`Individual call got decimals: ${decimals}`);
-    } catch (decimalsError) {
-      debugLog(`Individual decimals error: ${decimalsError.message}`);
-      errors.push({ field: 'decimals', error: decimalsError.message, method: 'individual' });
-      // Default to 18 as most common
-      decimals = 18;
-    }
-  }
 
   return {
     address: tokenAddress,
     name,
     symbol,
-    decimals: decimals !== null ? Number(decimals) : 18,
     success,
     errors: errors.length > 0 ? errors : undefined
   };

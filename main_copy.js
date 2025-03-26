@@ -55,7 +55,7 @@ async function processBlock(blockNumber) {
     // Get logs using the filter
     const logs = await clientHttp.getFilterLogs({ filter });
     
-    log(`Found ${logs.length} Transfer events in block ${blockNumber}`, false);
+    // log(`Found ${logs.length} Transfer events in block ${blockNumber}`, false);
     
     // Skip if no events
     if (logs.length === 0) return;

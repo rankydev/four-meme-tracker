@@ -1,11 +1,17 @@
-import fs from 'fs';
 import { getTokenData } from './tokenUtils.js';
 import { 
   FOUR_MEME_ADDRESS, 
   ZERO_ADDRESS,
   STANDARD_TOTAL_SUPPLY
 } from './config/index.js';
-import { safeStringify, log, formatValue } from './utils.js';
+import { formatValue } from './utils.js';
+
+// Helper for debug logs - only log when debug is true
+const debugLog = (message, debug = false) => {
+  if (debug) {
+    console.log(message);
+  }
+};
 
 /**
  * Calculate dev holding based on the transfer from Four.meme back to the creator
@@ -13,7 +19,6 @@ import { safeStringify, log, formatValue } from './utils.js';
  * @param {Array} params.txLogs - All transaction logs
  * @param {string} params.tokenAddress - The token contract address
  * @param {string} params.creatorAddress - The creator's address
- * @param {number} params.decimals - Token decimals
  * @param {Function} params.logFunction - Function to use for logging
  * @returns {Object} - Object containing dev holding amount and percentage
  */
@@ -21,7 +26,6 @@ function calculateDevHolding({
   txLogs,
   tokenAddress,
   creatorAddress,
-  decimals,
   logFunction = console.log
 }) {
   try {
@@ -33,7 +37,7 @@ function calculateDevHolding({
     );
     
     if (!devTransfer || !devTransfer.args.value) {
-      logFunction(`No dev transfer found from ${FOUR_MEME_ADDRESS} to ${creatorAddress}`, false);
+      debugLog(`No dev transfer found from ${FOUR_MEME_ADDRESS} to ${creatorAddress}`);
       return {
         amount: '0',
         percentage: '0',
@@ -48,10 +52,10 @@ function calculateDevHolding({
     return {
       amount,
       percentage: devHoldingPercent.toFixed(2),
-      formattedAmount: formatValue(amount, decimals)
+      formattedAmount: formatValue(amount, 18) // Fixed 18 decimals for all tokens
     };
   } catch (error) {
-    logFunction(`Error calculating dev holding: ${error.message}`, false);
+    debugLog(`Error calculating dev holding: ${error.message}`);
     return {
       amount: '0',
       percentage: '0',
@@ -62,17 +66,15 @@ function calculateDevHolding({
 }
 
 /**
- * Log token creation details to console and save to file
+ * Log token creation details to console
  * @param {Object} params - Parameters object
  * @param {Object} params.tokenInfo - Token information object
  * @param {Function} params.logFunction - Function to use for logging
- * @param {String} params.logsDir - Directory to save logs
  * @returns {void}
  */
 export function logTokenCreation({
   tokenInfo,
-  logFunction = console.log,
-  logsDir = './logs'
+  logFunction = console.log
 }) {
   if (!tokenInfo) return;
   
@@ -85,7 +87,6 @@ export function logTokenCreation({
     `- Token address: ${tokenInfo.tokenAddress}`,
     `- Name: ${tokenInfo.name || 'Unknown'}`,
     `- Symbol: ${tokenInfo.symbol || 'Unknown'}`,
-    `- Decimals: ${tokenInfo.decimals !== null ? tokenInfo.decimals : 18}`,
     `- Creator: ${tokenInfo.creator}`,
     `- Transaction: ${tokenInfo.transactionHash}`,
     `- Block: ${tokenInfo.blockNumber}`,
@@ -98,11 +99,6 @@ export function logTokenCreation({
   
   // Log each detail line to console
   details.forEach(detail => logFunction(detail));
-  
-  // Save token info to file
-  const tokenFilename = `${logsDir}/new_token_${tokenInfo.tokenAddress}_${Date.now()}.json`;
-  fs.writeFileSync(tokenFilename, safeStringify(tokenInfo));
-  logFunction(`Saved token info to ${tokenFilename}`, false); // Hide from console
 }
 
 /**
@@ -112,7 +108,6 @@ export function logTokenCreation({
  * @param {String} params.txHash - Transaction hash
  * @param {BigInt} params.blockNumber - Block number
  * @param {Function} params.logFunction - Function to use for logging
- * @param {String} params.logsDir - Directory to save logs
  * @param {Map} params.seenTokens - Map of already seen token addresses to their details
  * @returns {Object|null} - Token details if a new token is found, null otherwise
  */
@@ -121,7 +116,6 @@ export async function detectNewToken({
   txHash,
   blockNumber,
   logFunction = console.log,
-  logsDir = './logs',
   seenTokens = new Map()
 }) {
   // Find tokens sent to four.meme
@@ -132,7 +126,7 @@ export async function detectNewToken({
   // Skip if no transfers to four.meme
   if (toFourMeme.length === 0) return null;
   
-  logFunction(`Found ${toFourMeme.length} transfers to four.meme in transaction ${txHash}`, false);
+  debugLog(`Found ${toFourMeme.length} transfers to four.meme in transaction ${txHash}`);
   
   // Check each token sent to four.meme
   for (const fmLog of toFourMeme) {
@@ -140,33 +134,9 @@ export async function detectNewToken({
     
     // Skip if we've already seen this token
     if (seenTokens.has(tokenAddress)) {
-      logFunction(`Token ${tokenAddress} already seen, skipping`, false);
+      debugLog(`Token ${tokenAddress} already seen, skipping`);
       continue;
     }
-    
-    // Save all logs for this transaction for later analysis
-    const tokenLogsDir = `${logsDir}/token_logs`;
-    if (!fs.existsSync(tokenLogsDir)) {
-      fs.mkdirSync(tokenLogsDir, { recursive: true });
-    }
-    
-    // Save all transaction logs to help debug token creation
-    const txLogsFile = `${tokenLogsDir}/tx_logs_${tokenAddress}_${txHash}.json`;
-    const detailedTxLogs = txLogs.map(log => ({
-      address: log.address,
-      blockNumber: log.blockNumber.toString(),
-      logIndex: log.logIndex,
-      transactionHash: log.transactionHash,
-      transactionIndex: log.transactionIndex,
-      from: log.args.from,
-      to: log.args.to,
-      value: log.args.value ? log.args.value.toString() : 'N/A',
-      topics: log.topics,
-      data: log.data
-    }));
-    
-    fs.writeFileSync(txLogsFile, safeStringify(detailedTxLogs));
-    logFunction(`Saved detailed transaction logs for token ${tokenAddress} to ${txLogsFile}`, false);
     
     // Check if there's a mint operation for this token in the same tx
     const mintLog = txLogs.find(log => 
@@ -176,20 +146,11 @@ export async function detectNewToken({
     
     // Log all token events for analysis
     const tokenEvents = txLogs.filter(log => log.address.toLowerCase() === tokenAddress);
-    const tokenEventsFile = `${tokenLogsDir}/token_events_${tokenAddress}.json`;
-    fs.writeFileSync(tokenEventsFile, safeStringify(tokenEvents.map(log => ({
-      blockNumber: log.blockNumber.toString(),
-      transactionHash: log.transactionHash,
-      from: log.args.from,
-      to: log.args.to,
-      value: log.args.value ? log.args.value.toString() : 'N/A',
-      logIndex: log.logIndex
-    }))));
     
     // Skip tokens without mint operations
     if (!mintLog) continue;
     
-    logFunction(`Found mint operation for token ${tokenAddress}`, false);
+    debugLog(`Found mint operation for token ${tokenAddress}`);
     
     // Get the potential creator by finding the last event for this token
     // Sort token events by logIndex to find the last one
@@ -201,11 +162,11 @@ export async function detectNewToken({
     const lastTokenEvent = sortedTokenEvents[sortedTokenEvents.length - 1];
     const creatorAddress = lastTokenEvent.args.to;
     
-    logFunction(`Determined creator address: ${creatorAddress} (from last token event)`, false);
-    logFunction(`Mint recipient was: ${mintLog.args.to} (for comparison)`, false);
+    debugLog(`Determined creator address: ${creatorAddress} (from last token event)`);
+    debugLog(`Mint recipient was: ${mintLog.args.to} (for comparison)`);
     
     // Fetch token name and symbol
-    logFunction(`Fetching token data for ${tokenAddress}...`, false);
+    debugLog(`Fetching token data for ${tokenAddress}...`);
     
     try {
       // Get token data using the multicall approach from tokenUtils
@@ -214,15 +175,14 @@ export async function detectNewToken({
       // Log token data and handle null values properly
       const nameDisplay = tokenData.name || 'Unknown';
       const symbolDisplay = tokenData.symbol || 'Unknown'; 
-      const decimalsDisplay = tokenData.decimals !== null ? tokenData.decimals : 18;
       
-      logFunction(`Token data fetched: ${nameDisplay} (${symbolDisplay})`, false);
+      debugLog(`Token data fetched: ${nameDisplay} (${symbolDisplay})`);
       
       // Log any errors that occurred during token data fetching
       if (tokenData.errors) {
-        logFunction(`Token data fetching had errors:`, false);
+        debugLog(`Token data fetching had errors:`);
         tokenData.errors.forEach(err => {
-          logFunction(`  - ${err.field}: ${err.error}`, false);
+          debugLog(`  - ${err.field}: ${err.error}`);
         });
       }
       
@@ -231,7 +191,6 @@ export async function detectNewToken({
         txLogs,
         tokenAddress,
         creatorAddress,
-        decimals: decimalsDisplay,
         logFunction
       });
       
@@ -243,7 +202,6 @@ export async function detectNewToken({
         tokenAddress,
         name: tokenData.name,
         symbol: tokenData.symbol,
-        decimals: tokenData.decimals,
         totalSupply: STANDARD_TOTAL_SUPPLY,
         currentSupply,
         creator: creatorAddress,
