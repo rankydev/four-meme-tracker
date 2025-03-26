@@ -13,7 +13,7 @@ if (!fs.existsSync(logsDir)) {
   fs.mkdirSync(logsDir);
 }
 
-const seenTokens = new Set();
+const seenTokens = new Map();
 
 // Parse the Transfer event signature for use in filters
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
@@ -49,8 +49,6 @@ async function processBlock(blockNumber) {
       txGroups[log.transactionHash].push(log);
     });
     
-    // log(`Grouped into ${Object.keys(txGroups).length} transactions`, false, logsDir); // Set to false to hide from console
-    
     for (const [txHash, txLogs] of Object.entries(txGroups)) {
       // We need to create a custom logFunction that passes logsDir to the imported log function
       const logWithDir = (msg, showInConsole = true) => log(msg, showInConsole, logsDir);
@@ -70,6 +68,8 @@ async function processBlock(blockNumber) {
           logFunction: logWithDir, 
           logsDir 
         });
+        console.log(`Currently tracking ${seenTokens.size} tokens`);
+        console.log(seenTokens)
       }
     }
   } catch (error) {

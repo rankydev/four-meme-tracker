@@ -5,7 +5,61 @@ import {
   ZERO_ADDRESS,
   STANDARD_TOTAL_SUPPLY
 } from './config/index.js';
-import { safeStringify, log } from './utils.js';
+import { safeStringify, log, formatValue } from './utils.js';
+
+/**
+ * Calculate dev holding based on the transfer from Four.meme back to the creator
+ * @param {Object} params - Parameters object
+ * @param {Array} params.txLogs - All transaction logs
+ * @param {string} params.tokenAddress - The token contract address
+ * @param {string} params.creatorAddress - The creator's address
+ * @param {number} params.decimals - Token decimals
+ * @param {Function} params.logFunction - Function to use for logging
+ * @returns {Object} - Object containing dev holding amount and percentage
+ */
+function calculateDevHolding({
+  txLogs,
+  tokenAddress,
+  creatorAddress,
+  decimals,
+  logFunction = console.log
+}) {
+  try {
+    // Find the transfer from four.meme back to the creator
+    const devTransfer = txLogs.find(log => 
+      log.address.toLowerCase() === tokenAddress.toLowerCase() &&
+      log.args.from?.toLowerCase() === FOUR_MEME_ADDRESS.toLowerCase() &&
+      log.args.to?.toLowerCase() === creatorAddress.toLowerCase()
+    );
+    
+    if (!devTransfer || !devTransfer.args.value) {
+      logFunction(`No dev transfer found from ${FOUR_MEME_ADDRESS} to ${creatorAddress}`, false);
+      return {
+        amount: '0',
+        percentage: '0',
+        formattedAmount: '0'
+      };
+    }
+    
+    const amount = devTransfer.args.value.toString();
+    // Calculate percentage (dev holding / total supply * 100)
+    const devHoldingPercent = (Number(amount) / Number(STANDARD_TOTAL_SUPPLY)) * 100;
+    
+    return {
+      amount,
+      percentage: devHoldingPercent.toFixed(2),
+      formattedAmount: formatValue(amount, decimals)
+    };
+  } catch (error) {
+    logFunction(`Error calculating dev holding: ${error.message}`, false);
+    return {
+      amount: '0',
+      percentage: '0',
+      formattedAmount: '0',
+      error: error.message
+    };
+  }
+}
 
 /**
  * Log token creation details to console and save to file
@@ -36,7 +90,10 @@ export function logTokenCreation({
     `- Transaction: ${tokenInfo.transactionHash}`,
     `- Block: ${tokenInfo.blockNumber}`,
     `- Value: ${tokenInfo.value}`,
-    `- Time detected: ${tokenInfo.detectedAt}`
+    `- Time detected: ${tokenInfo.detectedAt}`,
+    `- Total Supply: ${tokenInfo.totalSupply}`,
+    `- Current Supply: ${tokenInfo.currentSupply}`,
+    `- Dev Holding: ${tokenInfo.devHolding.formattedAmount} (${tokenInfo.devHolding.percentage}%)`
   ];
   
   // Log each detail line to console
@@ -56,7 +113,7 @@ export function logTokenCreation({
  * @param {BigInt} params.blockNumber - Block number
  * @param {Function} params.logFunction - Function to use for logging
  * @param {String} params.logsDir - Directory to save logs
- * @param {Set} params.seenTokens - Set of already seen token addresses
+ * @param {Map} params.seenTokens - Map of already seen token addresses to their details
  * @returns {Object|null} - Token details if a new token is found, null otherwise
  */
 export async function detectNewToken({
@@ -65,7 +122,7 @@ export async function detectNewToken({
   blockNumber,
   logFunction = console.log,
   logsDir = './logs',
-  seenTokens = new Set()
+  seenTokens = new Map()
 }) {
   // Find tokens sent to four.meme
   const toFourMeme = txLogs.filter(log => 
@@ -134,9 +191,6 @@ export async function detectNewToken({
     
     logFunction(`Found mint operation for token ${tokenAddress}`, false);
     
-    // If we found both a mint and transfer to four.meme, we have a new token
-    seenTokens.add(tokenAddress);
-    
     // Get the potential creator by finding the last event for this token
     // Sort token events by logIndex to find the last one
     const sortedTokenEvents = [...tokenEvents].sort((a, b) => 
@@ -172,13 +226,26 @@ export async function detectNewToken({
         });
       }
       
-      // Prepare and return token info
-      return {
+      // Calculate dev holding based on the transfer from Four.meme back to the creator
+      const devHolding = calculateDevHolding({
+        txLogs,
+        tokenAddress,
+        creatorAddress,
+        decimals: decimalsDisplay,
+        logFunction
+      });
+      
+      // Calculate current supply (total supply - dev holding)
+      const currentSupply = (BigInt(STANDARD_TOTAL_SUPPLY) - BigInt(devHolding.amount)).toString();
+      
+      // Prepare token info
+      const tokenInfo = {
         tokenAddress,
         name: tokenData.name,
         symbol: tokenData.symbol,
         decimals: tokenData.decimals,
         totalSupply: STANDARD_TOTAL_SUPPLY,
+        currentSupply,
         creator: creatorAddress,
         mintRecipient: mintLog.args.to,
         transactionHash: txHash,
@@ -186,6 +253,7 @@ export async function detectNewToken({
         value: fmLog.args.value ? fmLog.args.value.toString() : 'N/A',
         detectedAt: new Date().toISOString(),
         dataErrors: tokenData.errors,
+        devHolding,
         mintLog: {
           from: mintLog.args.from,
           to: mintLog.args.to,
@@ -199,6 +267,11 @@ export async function detectNewToken({
           logIndex: fmLog.logIndex
         }
       };
+      
+      // Store token info in seenTokens map
+      seenTokens.set(tokenAddress, tokenInfo);
+      
+      return tokenInfo;
     } catch (error) {
       // Continue with minimal token data if fetching fails
       const errorMsg = `Error fetching token data for ${tokenAddress}: ${error.message}`;
@@ -206,7 +279,7 @@ export async function detectNewToken({
       console.error(error); // Show full error in console
       
       // Return minimal token info
-      return {
+      const tokenInfo = {
         tokenAddress,
         creator: creatorAddress,
         mintRecipient: mintLog.args.to,
@@ -215,8 +288,20 @@ export async function detectNewToken({
         value: fmLog.args.value ? fmLog.args.value.toString() : 'N/A',
         detectedAt: new Date().toISOString(),
         totalSupply: STANDARD_TOTAL_SUPPLY,
+        currentSupply: STANDARD_TOTAL_SUPPLY,
+        devHolding: {
+          amount: '0',
+          percentage: '0',
+          formattedAmount: '0',
+          error: 'Failed to calculate dev holding'
+        },
         error: error.message
       };
+      
+      // Store minimal token info in seenTokens map
+      seenTokens.set(tokenAddress, tokenInfo);
+      
+      return tokenInfo;
     }
   }
   
