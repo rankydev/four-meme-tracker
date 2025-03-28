@@ -16,103 +16,279 @@ const transferEvent = parseAbiItem('event Transfer(address indexed from, address
 // Global filter reference
 let globalFilter = null;
 
+// Four.meme related addresses to exclude from trade tracking
+const FOUR_MEME_RELATED_ADDRESSES = new Set([
+  '0x5c952063c7fc8610ffdb798152d69f0b9550762b', // Four.meme main contract
+  '0x8d68e48baee3264ecd62a8b85b80f8558cc1b499', // Four.meme related address
+  '0x48735904455eda3aa9a0c9e43ee9999c795e30b9'  // Four.meme helper contract
+].map(addr => addr.toLowerCase()));
+
+// Add these constants at the top with other constants
+const WBNB_ADDRESS = '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c'.toLowerCase();
+const KNOWN_DEX_CONTRACTS = new Set([
+  '0x7fa69aa3cd15409f424f3bf91576c97f78166a12', // DEX Aggregator
+  '0x10ed43c718714eb63d5aa57b78b54704e256024e', // PancakeSwap Router
+  '0x13f4ea83d0bd40e75c8222255bc855a974568dd4', // PancakeSwap Router v3
+  '0xcf0febd3f17cef5b47b0cd257acf6025c5bff3b7', // ApeSwap Router
+  '0x05ff2b0db69458a0750badebc4f9e13add608c7f', // PancakeSwap Router v1
+  '0x2b6e6e4def77583229299cf386438a227e683b28', // gmgn.ai Router
+  '0x1de460f363af910f51726def188f9004276bf4bc'  // Four.meme Trading Contract
+].map(addr => addr.toLowerCase()));
+
+// Add platform identification
+const PLATFORM_CONTRACTS = {
+  'four.meme': [
+    '0x5c952063c7fc8610ffdb798152d69f0b9550762b',
+    '0x1de460f363af910f51726def188f9004276bf4bc'
+  ].map(addr => addr.toLowerCase()),
+  'gmgn.ai': [
+    '0x2b6e6e4def77583229299cf386438a227e683b28'
+  ].map(addr => addr.toLowerCase())
+};
+
 /**
  * Process Transfer events from logs
  */
-async function processLogs(logs) {
-  if (!logs || logs.length === 0) return;
-  
-  // Group logs by transaction hash
-  const txGroups = {};
-  
-  // Track which tokens were updated for saving to database
+async function processLogs(logs, blockNumber) {
   const updatedTokens = new Set();
   
-  // Process each log only once - for both tracking trades and grouping by tx
-  logs.forEach(log => {
-    // Add to transaction groups for new token detection
-    if (!txGroups[log.transactionHash]) {
-      txGroups[log.transactionHash] = [];
+  // Group logs by transaction hash for first pass
+  const logsByTx = new Map();
+  for (const log of logs) {
+    const txHash = log.transactionHash;
+    if (!logsByTx.has(txHash)) {
+      logsByTx.set(txHash, []);
     }
-    txGroups[log.transactionHash].push(log);
-    
-    // Check for trades in existing tokens (avoiding a second loop)
-    const tokenAddress = log.address.toLowerCase();
-    
-    // Skip if we're not tracking this token
-    if (!seenTokens.has(tokenAddress)) return;
-    
-    // Skip if missing required data
-    if (!log.args?.from || !log.args?.to || !log.args?.value) return;
-    
-    // Get token info from our map
-    let tokenInfo = seenTokens.get(tokenAddress);
-    
-    // Initialize trade tracking if needed
-    if (!tokenInfo.trades) {
-      tokenInfo = {
-        ...tokenInfo,
-        trades: [],
-        buyCount: 0,
-        sellCount: 0,
-        uniqueBuyers: new Set(),
-        uniqueSellers: new Set(),
-        totalBuyVolume: "0",
-        totalSellVolume: "0"
-      };
-    }
-    
-    const fromAddress = log.args.from.toLowerCase();
-    const toAddress = log.args.to.toLowerCase();
-    const tokenAmount = log.args.value.toString();
-    
-    // Skip if no amount
-    if (tokenAmount === "0") return;
-    
-    // Check if this is a buy or sell
-    if (fromAddress === FOUR_MEME_ADDRESS.toLowerCase()) {
-      // It's a BUY (tokens from Four.meme to user)
-      tokenInfo.buyCount++;
-      tokenInfo.uniqueBuyers.add(toAddress);
-      tokenInfo.totalBuyVolume = (BigInt(tokenInfo.totalBuyVolume) + BigInt(tokenAmount)).toString();
-      
-      // Add to trades array
-      tokenInfo.trades.push({
-        type: 'buy',
-        amount: tokenAmount,
-        formattedAmount: formatValue(tokenAmount, 18),
-        buyer: toAddress,
-        txHash: log.transactionHash,
-        blockNumber: log.blockNumber.toString(),
-        timestamp: new Date().toISOString()
+    logsByTx.get(txHash).push(log);
+  }
+  
+  // First pass - process new token creations
+  for (const [txHash, txLogs] of logsByTx) {
+    for (const log of txLogs) {
+      const tokenInfo = await detectNewToken({ 
+        txLogs, 
+        txHash, 
+        blockNumber: log.blockNumber, 
+        logFunction: console.log, 
+        seenTokens 
       });
       
-      // Mark token as updated
-      updatedTokens.add(tokenAddress);
-    } else if (toAddress === FOUR_MEME_ADDRESS.toLowerCase()) {
-      // It's a SELL (tokens from user to Four.meme)
-      tokenInfo.sellCount++;
-      tokenInfo.uniqueSellers.add(fromAddress);
-      tokenInfo.totalSellVolume = (BigInt(tokenInfo.totalSellVolume) + BigInt(tokenAmount)).toString();
-      
-      // Add to trades array
-      tokenInfo.trades.push({
-        type: 'sell',
-        amount: tokenAmount,
-        formattedAmount: formatValue(tokenAmount, 18),
-        seller: fromAddress,
-        txHash: log.transactionHash,
-        blockNumber: log.blockNumber.toString(),
-        timestamp: new Date().toISOString()
-      });
-      
-      // Mark token as updated
-      updatedTokens.add(tokenAddress);
+      if (tokenInfo) {
+        logTokenCreation({ 
+          tokenInfo, 
+          logFunction: console.log 
+        });
+        console.log(`Currently tracking ${seenTokens.size} tokens`);
+        
+        // Save new token to database
+        try {
+          await saveToken(tokenInfo.tokenAddress, tokenInfo);
+        } catch (error) {
+          console.error(`Error saving new token ${tokenInfo.tokenAddress} to database: ${error.message}`);
+        }
+      }
     }
-    
-    // Update the token in our map
-    seenTokens.set(tokenAddress, tokenInfo);
-  });
+  }
+  
+  // Second pass - process trades and transfers
+  for (const [txHash, txLogs] of logsByTx) {
+    for (const log of txLogs) {
+      // Check for trades in tokens
+      const tokenAddress = log.address.toLowerCase();
+      
+      // Skip if we're not tracking this token
+      if (!seenTokens.has(tokenAddress)) return;
+      
+      // Skip if missing required data
+      if (!log.args?.from || !log.args?.to || !log.args?.value) return;
+      
+      const fromAddress = log.args.from.toLowerCase();
+      const toAddress = log.args.to.toLowerCase();
+      
+      // Skip if either address is a Four.meme related address (except the main contract for actual trades)
+      if ((fromAddress !== FOUR_MEME_ADDRESS.toLowerCase() && FOUR_MEME_RELATED_ADDRESSES.has(fromAddress)) || 
+          (toAddress !== FOUR_MEME_ADDRESS.toLowerCase() && FOUR_MEME_RELATED_ADDRESSES.has(toAddress))) {
+        return;
+      }
+      
+      // Get token info from our map
+      let tokenInfo = seenTokens.get(tokenAddress);
+      
+      // Initialize trade tracking if needed
+      if (!tokenInfo.trades) {
+        tokenInfo = {
+          ...tokenInfo,
+          trades: [],
+          buyCount: 1, // Start at 1 to count the creator's initial tokens
+          sellCount: 0,
+          uniqueBuyers: new Set([tokenInfo.creator.toLowerCase()]), // Initialize with creator
+          uniqueSellers: new Set(),
+          totalBuyVolume: tokenInfo.totalSupply || "0", // Initial supply counts as first buy
+          totalSellVolume: "0"
+        };
+      }
+      
+      const tokenAmount = log.args.value.toString();
+      
+      // Skip if no amount
+      if (tokenAmount === "0") return;
+      
+      // Check if this is a buy or sell
+      if (fromAddress === FOUR_MEME_ADDRESS.toLowerCase()) {
+        // It's a BUY (tokens from Four.meme to user)
+        tokenInfo.buyCount++;
+        tokenInfo.uniqueBuyers.add(toAddress);
+        tokenInfo.totalBuyVolume = (BigInt(tokenInfo.totalBuyVolume) + BigInt(tokenAmount)).toString();
+        
+        // Add to trades array
+        tokenInfo.trades.push({
+          type: 'buy',
+          amount: tokenAmount,
+          formattedAmount: formatValue(tokenAmount, 18),
+          buyer: toAddress,
+          txHash: log.transactionHash,
+          blockNumber: log.blockNumber.toString(),
+          timestamp: new Date().toISOString()
+        });
+        
+        // Mark token as updated
+        updatedTokens.add(tokenAddress);
+      } else if (toAddress === FOUR_MEME_ADDRESS.toLowerCase()) {
+        // It's a SELL (tokens from user to Four.meme)
+        tokenInfo.sellCount++;
+        tokenInfo.uniqueSellers.add(fromAddress);
+        tokenInfo.totalSellVolume = (BigInt(tokenInfo.totalSellVolume) + BigInt(tokenAmount)).toString();
+        
+        // Add to trades array
+        tokenInfo.trades.push({
+          type: 'sell',
+          amount: tokenAmount,
+          formattedAmount: formatValue(tokenAmount, 18),
+          seller: fromAddress,
+          txHash: log.transactionHash,
+          blockNumber: log.blockNumber.toString(),
+          timestamp: new Date().toISOString()
+        });
+        
+        // Mark token as updated
+        updatedTokens.add(tokenAddress);
+      } else if (!FOUR_MEME_RELATED_ADDRESSES.has(fromAddress) && !FOUR_MEME_RELATED_ADDRESSES.has(toAddress)) {
+        // This is a wallet-to-wallet transfer
+        // Check if the sender is a known buyer
+        if (tokenInfo.uniqueBuyers.has(fromAddress)) {
+          // Check if this is a DEX trade by looking at the transaction logs
+          const txLogs = await client.getTransactionReceipt({ hash: log.transactionHash });
+          const isWBNBTransferInTx = txLogs.logs.some(txLog => 
+            txLog.address.toLowerCase() === WBNB_ADDRESS &&
+            txLog.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' // Transfer event
+          );
+          
+          const isDexContract = KNOWN_DEX_CONTRACTS.has(toAddress);
+          
+          // Check for cross-platform trading
+          if (isDexContract) {
+            // Determine which platform this address belongs to
+            let platform = null;
+            for (const [name, addresses] of Object.entries(PLATFORM_CONTRACTS)) {
+              if (addresses.includes(toAddress)) {
+                platform = name;
+                break;
+              }
+            }
+
+            // If this is a different platform than Four.meme, log it
+            if (platform && platform !== 'four.meme') {
+              // Calculate total amount bought by this address
+              const buyerTrades = tokenInfo.trades.filter(t => 
+                t.type === 'buy' && 
+                t.buyer.toLowerCase() === fromAddress.toLowerCase()
+              );
+              
+              const totalBought = buyerTrades.reduce((sum, t) => sum + BigInt(t.amount), BigInt(0));
+              const numberOfBuys = buyerTrades.length;
+              
+              // Calculate time since first buy
+              if (buyerTrades.length > 0) {
+                const firstBuyTime = new Date(buyerTrades[0].timestamp);
+                const timeSinceFirstBuy = Math.floor((new Date() - firstBuyTime) / 1000); // in seconds
+                
+                console.log('\n🔄 CROSS-PLATFORM TRADE DETECTED 🔄');
+                console.log(`Token: ${tokenInfo.name} (${tokenInfo.symbol})`);
+                console.log(`Address: ${tokenInfo.tokenAddress}`);
+                console.log('Trade details:');
+                console.log(`  From: Four.meme buyer (${fromAddress})`);
+                console.log(`  To: ${platform} (${toAddress})`);
+                console.log(`  Current transfer amount: ${formatValue(tokenAmount, 18)} tokens`);
+                console.log('\nPosition Analysis:');
+                console.log(`  Number of buys on Four.meme: ${numberOfBuys}`);
+                console.log(`  Total amount bought: ${formatValue(totalBought.toString(), 18)} tokens`);
+                console.log(`  Time since first buy: ${Math.floor(timeSinceFirstBuy/60)} minutes`);
+                console.log(`  First buy block: ${buyerTrades[0].blockNumber}`);
+                console.log(`  Current block: ${log.blockNumber.toString()}`);
+                console.log(`  Blocks between: ${parseInt(log.blockNumber) - parseInt(buyerTrades[0].blockNumber)}`);
+                
+                // Add trade history
+                console.log('\nBuy History:');
+                buyerTrades.forEach((trade, index) => {
+                  console.log(`  Buy #${index + 1}:`);
+                  console.log(`    Amount: ${trade.formattedAmount} tokens`);
+                  console.log(`    Block: ${trade.blockNumber}`);
+                  console.log(`    Tx: ${trade.txHash}`);
+                });
+              }
+            }
+            return; // Skip normal transfer processing for DEX trades
+          }
+          
+          // Only process if it's not a DEX trade
+          if (!isDexContract && !isWBNBTransferInTx) {
+            const transfer = {
+              from: fromAddress,
+              to: toAddress,
+              amount: tokenAmount,
+              formattedAmount: formatValue(tokenAmount, 18),
+              txHash: log.transactionHash,
+              blockNumber: log.blockNumber.toString(),
+              timestamp: new Date().toISOString()
+            };
+
+            // Initialize wallet transfers if needed
+            if (!tokenInfo.walletTransfers) {
+              tokenInfo.walletTransfers = [];
+            }
+            tokenInfo.walletTransfers.push(transfer);
+
+            // Log the transfer immediately
+            console.log('\n🔄 BUYER TRANSFER DETECTED 🔄');
+            console.log(`Token: ${tokenInfo.name} (${tokenInfo.symbol})`);
+            console.log(`Address: ${tokenInfo.tokenAddress}`);
+            console.log('Transfer details:');
+            console.log(`  From: ${fromAddress} (Previous buyer)`);
+            console.log(`  To: ${toAddress}`);
+            console.log(`  Amount: ${transfer.formattedAmount} tokens`);
+            console.log(`  Tx: ${transfer.txHash}`);
+            console.log(`  Block: ${transfer.blockNumber}`);
+
+            // Track transfers to same address
+            const transfersToAddress = tokenInfo.walletTransfers.filter(t => t.to === toAddress);
+            if (transfersToAddress.length > 1) {
+              const totalAmount = transfersToAddress.reduce((sum, t) => sum + BigInt(t.amount), BigInt(0));
+              console.log('\n⚠️ Multiple transfers detected to same address:');
+              console.log(`  Total transfers: ${transfersToAddress.length}`);
+              console.log(`  Total amount: ${formatValue(totalAmount.toString(), 18)} tokens`);
+              console.log(`  Receiving address: ${toAddress}`);
+            }
+
+            // Mark token as updated
+            updatedTokens.add(tokenAddress);
+          }
+        }
+      }
+      
+      // Update the token in our map
+      seenTokens.set(tokenAddress, tokenInfo);
+    }
+  }
   
   // Save updated tokens to database
   for (const tokenAddress of updatedTokens) {
@@ -125,31 +301,7 @@ async function processLogs(logs) {
     }
   }
   
-  // Process potential new tokens
-  for (const [txHash, txLogs] of Object.entries(txGroups)) {
-    const tokenInfo = await detectNewToken({ 
-      txLogs, 
-      txHash, 
-      blockNumber: txLogs[0].blockNumber, 
-      logFunction: console.log, 
-      seenTokens 
-    });
-    
-    if (tokenInfo) {
-      logTokenCreation({ 
-        tokenInfo, 
-        logFunction: console.log 
-      });
-      console.log(`Currently tracking ${seenTokens.size} tokens`);
-      
-      // Save new token to database
-      try {
-        await saveToken(tokenInfo.tokenAddress, tokenInfo);
-      } catch (error) {
-        console.error(`Error saving new token ${tokenInfo.tokenAddress} to database: ${error.message}`);
-      }
-    }
-  }
+  return updatedTokens;
 }
 
 async function main() {
@@ -182,7 +334,7 @@ async function main() {
       try {
         // Get new events since last check
         const logs = await client.getFilterChanges({ filter: globalFilter });
-        await processLogs(logs);
+        await processLogs(logs, blockNumber);
         console.log(`Processed block ${blockNumber} (${logs.length} events)`);
       } catch (error) {
         console.error(`Error processing block ${blockNumber}: ${error.message}`);
