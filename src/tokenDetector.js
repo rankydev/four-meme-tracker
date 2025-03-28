@@ -1,69 +1,14 @@
+import { FOUR_MEME_ADDRESS, ZERO_ADDRESS, STANDARD_TOTAL_SUPPLY } from './config/index.js';
 import { getTokenData } from './tokenUtils.js';
-import { 
-  FOUR_MEME_ADDRESS, 
-  ZERO_ADDRESS,
-  STANDARD_TOTAL_SUPPLY
-} from './config/index.js';
-import { formatValue } from './utils.js';
+import { isLikelyToken } from './tokenUtils.js';
+import { calculateDevHolding, formatValue } from './utils.js';
+import { debugLog, errorLog } from './utils/logging.js';
 
-// Helper for debug logs - only log when debug is true
-const debugLog = (message, debug = false) => {
-  if (debug) {
-    console.log(message);
-  }
-};
-
-/**
- * Calculate dev holding based on the transfer from Four.meme back to the creator
- * @param {Object} params - Parameters object
- * @param {Array} params.txLogs - All transaction logs
- * @param {string} params.tokenAddress - The token contract address
- * @param {string} params.creatorAddress - The creator's address
- * @param {Function} params.logFunction - Function to use for logging
- * @returns {Object} - Object containing dev holding amount and percentage
- */
-function calculateDevHolding({
-  txLogs,
-  tokenAddress,
-  creatorAddress,
-  logFunction = console.log
-}) {
-  try {
-    // Find the transfer from four.meme back to the creator
-    const devTransfer = txLogs.find(log => 
-      log.address.toLowerCase() === tokenAddress.toLowerCase() &&
-      log.args.from?.toLowerCase() === FOUR_MEME_ADDRESS.toLowerCase() &&
-      log.args.to?.toLowerCase() === creatorAddress.toLowerCase()
-    );
-    
-    if (!devTransfer || !devTransfer.args.value) {
-      debugLog(`No dev transfer found from ${FOUR_MEME_ADDRESS} to ${creatorAddress}`);
-      return {
-        amount: '0',
-        percentage: '0',
-        formattedAmount: '0'
-      };
-    }
-    
-    const amount = devTransfer.args.value.toString();
-    // Calculate percentage (dev holding / total supply * 100)
-    const devHoldingPercent = (Number(amount) / Number(STANDARD_TOTAL_SUPPLY)) * 100;
-    
-    return {
-      amount,
-      percentage: devHoldingPercent.toFixed(2),
-      formattedAmount: formatValue(amount, 18) // Fixed 18 decimals for all tokens
-    };
-  } catch (error) {
-    debugLog(`Error calculating dev holding: ${error.message}`);
-    return {
-      amount: '0',
-      percentage: '0',
-      formattedAmount: '0',
-      error: error.message
-    };
-  }
-}
+// Known infrastructure contracts that should be excluded from token detection
+const INFRASTRUCTURE_CONTRACTS = [
+  '0x5c952063c7fc8610ffdb798152d69f0b9550762b', // Four.meme platform
+  '0x48735904455eda3aa9a0c9e43ee9999c795e30b9'  // Four.meme helper
+].map(addr => addr.toLowerCase());
 
 /**
  * Log token creation details to console
@@ -132,6 +77,12 @@ export async function detectNewToken({
   for (const fmLog of toFourMeme) {
     const tokenAddress = fmLog.address.toLowerCase();
     
+    // Skip infrastructure contracts
+    if (INFRASTRUCTURE_CONTRACTS.includes(tokenAddress)) {
+      debugLog(`Skipping infrastructure contract ${tokenAddress}`);
+      continue;
+    }
+    
     // Skip if we've already seen this token
     if (seenTokens.has(tokenAddress)) {
       debugLog(`Token ${tokenAddress} already seen, skipping`);
@@ -144,33 +95,28 @@ export async function detectNewToken({
       log.args.from === ZERO_ADDRESS
     );
     
-    // Log all token events for analysis
-    const tokenEvents = txLogs.filter(log => log.address.toLowerCase() === tokenAddress);
-    
     // Skip tokens without mint operations
     if (!mintLog) continue;
     
     debugLog(`Found mint operation for token ${tokenAddress}`);
     
-    // Get the potential creator by finding the last event for this token
-    // Sort token events by logIndex to find the last one
-    const sortedTokenEvents = [...tokenEvents].sort((a, b) => 
-      Number(a.logIndex) - Number(b.logIndex)
-    );
-    
-    // The last event's "to" address is likely the real creator
-    const lastTokenEvent = sortedTokenEvents[sortedTokenEvents.length - 1];
-    const creatorAddress = lastTokenEvent.args.to;
-    
-    debugLog(`Determined creator address: ${creatorAddress} (from last token event)`);
-    debugLog(`Mint recipient was: ${mintLog.args.to} (for comparison)`);
-    
-    // Fetch token name and symbol
-    debugLog(`Fetching token data for ${tokenAddress}...`);
-    
+    // Verify this is actually an ERC20 token before proceeding
     try {
+      // First check if it implements basic ERC20 interface
+      const isToken = await isLikelyToken(tokenAddress);
+      if (!isToken) {
+        debugLog(`${tokenAddress} does not implement ERC20 interface, skipping`);
+        continue;
+      }
+      
       // Get token data using the multicall approach from tokenUtils
       const tokenData = await getTokenData(tokenAddress);
+      
+      // Skip if we couldn't get basic token data
+      if (!tokenData || !tokenData.success) {
+        debugLog(`Could not get token data for ${tokenAddress}, skipping`);
+        continue;
+      }
       
       // Log token data and handle null values properly
       const nameDisplay = tokenData.name || 'Unknown';
@@ -185,6 +131,17 @@ export async function detectNewToken({
           debugLog(`  - ${err.field}: ${err.error}`);
         });
       }
+      
+      // Get the potential creator by finding the last event for this token
+      const sortedTokenEvents = [...txLogs.filter(log => log.address.toLowerCase() === tokenAddress)]
+        .sort((a, b) => Number(a.logIndex) - Number(b.logIndex));
+      
+      // The last event's "to" address is likely the real creator
+      const lastTokenEvent = sortedTokenEvents[sortedTokenEvents.length - 1];
+      const creatorAddress = lastTokenEvent.args.to;
+      
+      debugLog(`Determined creator address: ${creatorAddress} (from last token event)`);
+      debugLog(`Mint recipient was: ${mintLog.args.to} (for comparison)`);
       
       // Calculate dev holding based on the transfer from Four.meme back to the creator
       const devHolding = calculateDevHolding({
@@ -230,36 +187,10 @@ export async function detectNewToken({
       seenTokens.set(tokenAddress, tokenInfo);
       
       return tokenInfo;
+      
     } catch (error) {
-      // Continue with minimal token data if fetching fails
-      const errorMsg = `Error fetching token data for ${tokenAddress}: ${error.message}`;
-      logFunction(errorMsg); // Show errors in console
-      console.error(error); // Show full error in console
-      
-      // Return minimal token info
-      const tokenInfo = {
-        tokenAddress,
-        creator: creatorAddress,
-        mintRecipient: mintLog.args.to,
-        transactionHash: txHash,
-        blockNumber: blockNumber.toString(),
-        value: fmLog.args.value ? fmLog.args.value.toString() : 'N/A',
-        detectedAt: new Date().toISOString(),
-        totalSupply: STANDARD_TOTAL_SUPPLY,
-        currentSupply: STANDARD_TOTAL_SUPPLY,
-        devHolding: {
-          amount: '0',
-          percentage: '0',
-          formattedAmount: '0',
-          error: 'Failed to calculate dev holding'
-        },
-        error: error.message
-      };
-      
-      // Store minimal token info in seenTokens map
-      seenTokens.set(tokenAddress, tokenInfo);
-      
-      return tokenInfo;
+      debugLog(`Error processing token ${tokenAddress}: ${error.message}`);
+      continue;
     }
   }
   
