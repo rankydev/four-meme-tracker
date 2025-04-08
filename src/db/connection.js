@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import 'dotenv/config';
 
 // Mongoose connection options
 const options = {
@@ -6,7 +7,7 @@ const options = {
 };
 
 // Database URL
-const MONGODB_URI = 'mongodb://localhost:27017/four_meme_tracker';
+const MONGODB_URI = process.env.MONGODB_URI;
 
 /**
  * Connect to MongoDB database
