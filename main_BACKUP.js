@@ -7,12 +7,9 @@ import { detectNewToken, logTokenCreation } from './src/tokenDetector.js';
 import { formatValue } from './src/utils.js';
 import { connectToDatabase } from './src/db/connection.js';
 import { saveToken } from './src/db/tokenRepository.js';
-import { saveSignal } from './src/db/signalRepository.js';
-import { TokenAnalysisQueue } from './src/services/TokenAnalysisQueue.js';
 
 const seenTokens = new Map();
 let globalFilter = null;
-const analysisQueue = new TokenAnalysisQueue();
 
 // Parse the Transfer event signature for use in filters
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
@@ -29,36 +26,25 @@ async function createFilter() {
   }
 }
 
-function analyzeTokenActivity(tokenInfo) {
-  const trades = tokenInfo.trades || [];
-  const uniqueBlocks = new Set(trades.map(t => t.blockNumber));
-  const uniqueBuyers = tokenInfo.uniqueBuyers?.size || 0;
-  const uniqueSellers = tokenInfo.uniqueSellers?.size || 0;
-
-  // Criteria based on your trading patterns
-  const hasEnoughTrades = trades.length >= 5;
-  const hasMultipleBlocks = uniqueBlocks.size >= 7;
-  const hasEnoughParticipants = (uniqueBuyers + uniqueSellers) >= 5;
-
-  return {
-    shouldKeep: hasEnoughTrades && hasMultipleBlocks && hasEnoughParticipants,
-    metrics: {
-      tradeCount: trades.length,
-      blocksWithActivity: uniqueBlocks.size,
-      uniqueTraders: uniqueBuyers + uniqueSellers
-    },
-    token: tokenInfo
-  };
-}
-
 /**
  * Process a specific block to detect new token creations
  */
 async function processBlock(blockNumber) {
-  try {        
+  try {    
+    // Create filter for Transfer events in this block
+    // Note: We use parseAbiItem for the event structure but we're aware that 
+    // TRANSFER_EVENT_SIGNATURE from config has the correct event signature
+    // const filter = await client.createEventFilter({
+    //   event: transferEvent,
+    //   fromBlock: blockNumber,
+    //   toBlock: blockNumber,
+    // });
+    
     // Get logs using the filter
     const logs = await clientWebsocket.getFilterChanges({ filter: globalFilter });
-        
+    
+    // console.log(`Found ${logs.length} Transfer events in block ${blockNumber}`);
+    
     // Skip if no events
     if (logs.length === 0) return;
     
@@ -68,23 +54,6 @@ async function processBlock(blockNumber) {
     // Track which tokens were updated in this block for saving to database
     const updatedTokens = new Set();
     
-    const tokensForAnalysis = analysisQueue.checkForAnalysis(blockNumber);
-    for (const token of tokensForAnalysis) {
-      const tokenInfo = seenTokens.get(token.address);
-      const analysis = analyzeTokenActivity(tokenInfo);
-
-      if (!analysis.shouldKeep) {
-        seenTokens.delete(token.address);
-      } else {
-          try {
-            await saveSignal(analysis.token, analysis);
-            console.log(`Saved signal for promising token ${token.address}`);
-          } catch (error) {
-            console.error(`Failed to save signal for token ${token.address}: ${error.message}`);
-          }
-      }
-    }
-
     // Process each log only once - for both tracking trades and grouping by tx
     logs.forEach(log => {
       // Add to transaction groups for new token detection
@@ -146,7 +115,7 @@ async function processBlock(blockNumber) {
           blockNumber: log.blockNumber.toString(),
           timestamp: new Date().toISOString()
         });
-
+        
         // Mark token as updated
         updatedTokens.add(tokenAddress);
       } else if (toAddress === FOUR_MEME_ADDRESS.toLowerCase()) {
@@ -195,8 +164,6 @@ async function processBlock(blockNumber) {
       });
       
       if (tokenInfo) {
-        analysisQueue.enqueueToken(tokenInfo.tokenAddress, tokenInfo, blockNumber);
-
         logTokenCreation({ 
           tokenInfo, 
           logFunction: console.log 

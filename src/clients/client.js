@@ -10,6 +10,16 @@ const config = {
   },
 };
 
+const wsConfig = {
+  ...config,
+  keepAlive: { interval: 1_000 },
+  reconnect: {
+    attempts: 10,
+    delay: 1_000,
+    retryCount: 20,
+  },
+}
+
 const clientHttp = createPublicClient({
   ...config,
   transport: http(
@@ -18,7 +28,7 @@ const clientHttp = createPublicClient({
 });
 
 const clientWebsocket = createPublicClient({
-  ...config,
+  ...wsConfig,
   transport: webSocket(
     `${process.env.ALCHEMY_PROVIDER_WS_URL_BSC}${process.env.ALCHEMY_API_KEY}`
   ),
